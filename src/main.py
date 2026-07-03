@@ -4,12 +4,14 @@ from __future__ import annotations
 import os
 import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import google.auth
 import requests
 from dotenv import load_dotenv
 
+import chart
 import ga4_client
 import gsc_client
 from report import build_chat_message, build_keyword_memo, build_report
@@ -20,6 +22,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/analytics.readonly",
     "https://www.googleapis.com/auth/webmasters.readonly",
 ]
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+REPORTS_DIR = REPO_ROOT / "reports"
 
 
 def _load_credentials():
@@ -98,7 +103,15 @@ def main() -> int:
         memo_lines = build_keyword_memo(
             current_queries, prev_queries, report["top_losers"], loser_page_queries
         )
-        message = build_chat_message(report, memo_lines)
+
+        chart_image_url = None
+        pages_base_url = os.environ.get("GITHUB_PAGES_BASE_URL")
+        if pages_base_url:
+            REPORTS_DIR.mkdir(exist_ok=True)
+            chart.generate_top_pages_chart(report, str(REPORTS_DIR / "latest.png"))
+            chart_image_url = f"{pages_base_url.rstrip('/')}/reports/latest.png?d={period[1].isoformat()}"
+
+        message = build_chat_message(report, memo_lines, chart_image_url)
 
         response = requests.post(webhook_url, json=message, timeout=30)
         response.raise_for_status()

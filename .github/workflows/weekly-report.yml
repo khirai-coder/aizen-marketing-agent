@@ -7,7 +7,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -35,4 +35,15 @@ jobs:
           GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
           GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
           GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
+          GITHUB_PAGES_BASE_URL: "https://khirai-coder.github.io/aizen-marketing-agent"
         run: python main.py
+
+      - name: Publish chart to GitHub Pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add reports/latest.png
+          if ! git diff --cached --quiet; then
+            git commit -m "Update weekly report chart"
+            git push
+          fi

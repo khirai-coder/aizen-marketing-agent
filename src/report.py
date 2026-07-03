@@ -257,7 +257,9 @@ def build_keyword_memo(
     return lines
 
 
-def build_chat_message(report: dict, memo_lines: list[str] | None = None) -> dict:
+def build_chat_message(
+    report: dict, memo_lines: list[str] | None = None, chart_image_url: str | None = None
+) -> dict:
     """Google Chat Webhook向けのcardsV2メッセージを組み立てる。"""
     start, end = report["period"]
     prev_start, prev_end = report["prev_period"]
@@ -301,6 +303,13 @@ def build_chat_message(report: dict, memo_lines: list[str] | None = None) -> dic
             "widgets": [{"textParagraph": {"text": "<br>".join(summary_lines)}}],
         }
     ]
+    if chart_image_url:
+        sections.append(
+            {
+                "header": "ページ別セッション数グラフ",
+                "widgets": [{"image": {"imageUrl": chart_image_url}}],
+            }
+        )
     if top_lines:
         sections.append(
             {
