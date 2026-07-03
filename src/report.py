@@ -5,17 +5,22 @@ from dataclasses import dataclass
 from datetime import date
 
 from ga4_client import GA4PageRow, GA4Totals
-from gsc_client import GSCPageRow
+from gsc_client import GSCPageRow, GSCQueryRow
 
 TOP_N = 8
 MOVERS_N = 3
-NEW_PAGE_THRESHOLD = 5  # 前週がこの値未満なら%表示ではなく「新規」扱いにする
+NEW_PAGE_THRESHOLD = 5  # 前週がこの値未満なら%表示ではなく「急伸」扱いにする
+QUERY_MIN_IMPRESSIONS = 20  # これ未満の表示回数のキーワードはノイズとして無視する
+STRIKING_DISTANCE_MIN_POS = 4  # この順位帯(4〜20位)は「もう一押しで上位表示」の狙い目
+STRIKING_DISTANCE_MAX_POS = 20
+POSITION_DROP_THRESHOLD = 2.0  # 平均順位がこれ以上悪化していたらTDH見直しを提案
 
 
 @dataclass
 class PageMetrics:
     path: str
     title: str
+    url: str | None = None
     sessions: int = 0
     active_users: int = 0
     page_views: int = 0
@@ -42,6 +47,7 @@ def _merge(ga4_rows: list[GA4PageRow], gsc_rows: list[GSCPageRow]) -> dict[str, 
         if m is None:
             m = PageMetrics(path=r.path, title=r.path)
             pages[r.path] = m
+        m.url = r.url
         m.clicks = r.clicks
         m.impressions = r.impressions
         m.ctr = r.ctr
@@ -109,8 +115,9 @@ def build_report(
         current_pages.values(), key=lambda p: p.sessions, reverse=True
     )[:TOP_N]
 
-    # 前週にほぼ実績がなかったページ(新規公開など)は%変化が意味を持たないため、
-    # 「新規で伸びたページ」として別枠にし、既存ページの増減(movers)からは除外する。
+    # 前週の実績がほぼゼロのページは%変化が意味を持たない(1→233で+23200%等)ため、
+    # 「急伸ページ」として別枠にし、既存ページの増減(movers)からは除外する。
+    # ページの公開日とは無関係(古いページが急に伸びた場合もここに入る)。
     new_pages = []
     movers = []
     for path, cur in current_pages.items():
@@ -144,7 +151,113 @@ def build_report(
     }
 
 
-def build_chat_message(report: dict) -> dict:
+def _keyword_movers(
+    current_queries: list[GSCQueryRow], prev_queries: list[GSCQueryRow], top_n: int = MOVERS_N
+):
+    prev_map = {q.query: q for q in prev_queries}
+    deltas = []
+    for q in current_queries:
+        prev = prev_map.get(q.query)
+        prev_clicks = prev.clicks if prev else 0
+        prev_impressions = prev.impressions if prev else 0
+        if q.impressions < QUERY_MIN_IMPRESSIONS and prev_impressions < QUERY_MIN_IMPRESSIONS:
+            continue
+        deltas.append((q.clicks - prev_clicks, q, prev_clicks))
+    deltas.sort(key=lambda x: x[0], reverse=True)
+    gainers = [d for d in deltas if d[0] > 0][:top_n]
+    losers = [d for d in deltas if d[0] < 0][-top_n:][::-1]
+    return gainers, losers
+
+
+def _find_striking_distance_keyword(current_queries: list[GSCQueryRow]) -> GSCQueryRow | None:
+    """順位4〜20位・表示回数が多いキーワード = もう一押しで上位表示が狙える最大レバレッジの対象。"""
+    candidates = [
+        q
+        for q in current_queries
+        if STRIKING_DISTANCE_MIN_POS <= q.position <= STRIKING_DISTANCE_MAX_POS
+        and q.impressions >= QUERY_MIN_IMPRESSIONS
+    ]
+    candidates.sort(key=lambda q: q.impressions, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def _recovery_suggestion(
+    page: PageMetrics,
+    prev_sessions: int,
+    page_queries: tuple[list[GSCQueryRow], list[GSCQueryRow]] | None,
+) -> str:
+    header = f"・{page.path}（{prev_sessions:,}→{page.sessions:,}セッション）"
+    if not page_queries or (not page_queries[0] and not page_queries[1]):
+        return f"{header}: 検索流入がほぼないページです。SNS/紹介など他の流入経路の変化を確認してください。"
+
+    current_q, prev_q = page_queries
+    prev_map = {q.query: q for q in prev_q}
+    impression_drop = 0
+    position_delta_sum = 0.0
+    compared = 0
+    for q in current_q:
+        prev = prev_map.get(q.query)
+        if prev is None:
+            continue
+        impression_drop += prev.impressions - q.impressions
+        position_delta_sum += q.position - prev.position
+        compared += 1
+    avg_position_drop = position_delta_sum / compared if compared else 0
+
+    if avg_position_drop > POSITION_DROP_THRESHOLD:
+        return (
+            f"{header}: 主要キーワードの平均順位が{avg_position_drop:.1f}位悪化しています。"
+            f"タイトル・メタディスクリプション・見出し(TDH)の見直しを優先してください。"
+        )
+    if impression_drop > 0:
+        return (
+            f"{header}: 表示回数自体が落ちています（検索需要の減少、または競合の強化）。"
+            f"内容を最新情報に更新するリライトを検討してください。"
+        )
+    return f"{header}: 検索指標に大きな変化はありません。SNS/紹介など他の流入経路の減少を確認してください。"
+
+
+def build_keyword_memo(
+    current_queries: list[GSCQueryRow],
+    prev_queries: list[GSCQueryRow],
+    top_losers: list[tuple[float, PageMetrics, int]],
+    loser_page_queries: dict[str, tuple[list[GSCQueryRow], list[GSCQueryRow]]],
+) -> list[str]:
+    """流入キーワードの増減分析とネクストアクション提案の行リストを組み立てる。"""
+    lines: list[str] = []
+
+    gainers, losers = _keyword_movers(current_queries, prev_queries)
+    if gainers:
+        lines.append("<b>伸びているKW</b>")
+        for delta, q, prev_clicks in gainers:
+            lines.append(f"・「{q.query}」 クリック {prev_clicks:,}→{q.clicks:,} / 平均順位 {q.position:.1f}")
+    if losers:
+        lines.append("<b>落ちているKW</b>")
+        for delta, q, prev_clicks in losers:
+            lines.append(f"・「{q.query}」 クリック {prev_clicks:,}→{q.clicks:,} / 平均順位 {q.position:.1f}")
+
+    lines.append("<b>ネクストアクション（最もレバレッジが効く一手）</b>")
+    opportunity = _find_striking_distance_keyword(current_queries)
+    if opportunity:
+        lines.append(
+            f"・「{opportunity.query}」は表示回数{opportunity.impressions:,}回・平均順位{opportunity.position:.1f}位で、"
+            f"上位表示まであと一歩です。該当ページのタイトル/見出し強化や内部リンク追加で順位を押し上げれば、"
+            f"表示回数はそのままクリック数を大きく伸ばせる可能性が最も高い施策です。"
+        )
+    elif gainers:
+        lines.append(f"・「{gainers[0][1].query}」が伸びています。関連コンテンツの拡充や内部リンク強化でさらに伸ばせる余地があります。")
+    else:
+        lines.append("・今週は明確な伸び筋キーワードが見つかりませんでした。")
+
+    if top_losers:
+        lines.append("<b>下落ページのリカバリー提案</b>")
+        for pct, cur, prev_sessions in top_losers:
+            lines.append(_recovery_suggestion(cur, prev_sessions, loser_page_queries.get(cur.path)))
+
+    return lines
+
+
+def build_chat_message(report: dict, memo_lines: list[str] | None = None) -> dict:
     """Google Chat Webhook向けのcardsV2メッセージを組み立てる。"""
     start, end = report["period"]
     prev_start, prev_end = report["prev_period"]
@@ -170,7 +283,7 @@ def build_chat_message(report: dict) -> dict:
 
     mover_lines = []
     if report.get("new_pages"):
-        mover_lines.append("<b>新規で伸びたページ</b>")
+        mover_lines.append("<b>急伸ページ（前週ほぼ流入なし→今週急増）</b>")
         for p in report["new_pages"]:
             mover_lines.append(f"・{p.path} — セッション {p.sessions:,}")
     if report["top_gainers"]:
@@ -200,6 +313,13 @@ def build_chat_message(report: dict) -> dict:
             {
                 "header": "増減ハイライト",
                 "widgets": [{"textParagraph": {"text": "<br>".join(mover_lines)}}],
+            }
+        )
+    if memo_lines:
+        sections.append(
+            {
+                "header": "分析メモ",
+                "widgets": [{"textParagraph": {"text": "<br>".join(memo_lines)}}],
             }
         )
 

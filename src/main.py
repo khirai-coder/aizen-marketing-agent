@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 import ga4_client
 import gsc_client
-from report import build_chat_message, build_report
+from report import build_chat_message, build_keyword_memo, build_report
 
 load_dotenv()
 
@@ -82,7 +82,23 @@ def main() -> int:
             ga4_totals_current,
             ga4_totals_prev,
         )
-        message = build_chat_message(report)
+
+        current_queries = gsc_client.fetch_query_metrics(credentials, site_url, *period)
+        prev_queries = gsc_client.fetch_query_metrics(credentials, site_url, *prev_period)
+
+        loser_page_queries = {}
+        for _pct, cur, _prev_sessions in report["top_losers"]:
+            if not cur.url:
+                continue
+            loser_page_queries[cur.path] = (
+                gsc_client.fetch_query_metrics_for_page(credentials, site_url, cur.url, *period),
+                gsc_client.fetch_query_metrics_for_page(credentials, site_url, cur.url, *prev_period),
+            )
+
+        memo_lines = build_keyword_memo(
+            current_queries, prev_queries, report["top_losers"], loser_page_queries
+        )
+        message = build_chat_message(report, memo_lines)
 
         response = requests.post(webhook_url, json=message, timeout=30)
         response.raise_for_status()
