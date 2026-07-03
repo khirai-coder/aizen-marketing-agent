@@ -26,8 +26,51 @@ class GA4PageRow:
     conversions: float
 
 
+@dataclass
+class GA4Totals:
+    sessions: int
+    active_users: int
+    page_views: int
+    conversions: float
+
+
 def _client(credentials: service_account.Credentials) -> BetaAnalyticsDataClient:
     return BetaAnalyticsDataClient(credentials=credentials)
+
+
+def fetch_site_totals(
+    credentials: service_account.Credentials,
+    property_id: str,
+    start_date: date,
+    end_date: date,
+) -> GA4Totals:
+    """サイト全体の合計指標を取得する。
+
+    ページ別(pagePath)で内訳を取ってからsessions/activeUsersを単純合計すると、
+    複数ページを見た1セッションが各ページで重複計上され水増しされるため、
+    全体サマリはディメンションなしのレポートで別途取得する。
+    """
+    client = _client(credentials)
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        metrics=[Metric(name=m) for m in METRICS],
+        date_ranges=[
+            DateRange(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+        ],
+    )
+    response = client.run_report(request)
+    if not response.rows:
+        return GA4Totals(sessions=0, active_users=0, page_views=0, conversions=0.0)
+
+    sessions, active_users, page_views, conversions = (
+        v.value for v in response.rows[0].metric_values
+    )
+    return GA4Totals(
+        sessions=int(sessions),
+        active_users=int(active_users),
+        page_views=int(page_views),
+        conversions=float(conversions),
+    )
 
 
 def fetch_page_metrics(

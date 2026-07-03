@@ -69,8 +69,19 @@ def main() -> int:
         prev_ga4 = ga4_client.fetch_page_metrics(credentials, property_id, *prev_period)
         current_gsc = gsc_client.fetch_page_metrics(credentials, site_url, *period)
         prev_gsc = gsc_client.fetch_page_metrics(credentials, site_url, *prev_period)
+        ga4_totals_current = ga4_client.fetch_site_totals(credentials, property_id, *period)
+        ga4_totals_prev = ga4_client.fetch_site_totals(credentials, property_id, *prev_period)
 
-        report = build_report(period, prev_period, current_ga4, prev_ga4, current_gsc, prev_gsc)
+        report = build_report(
+            period,
+            prev_period,
+            current_ga4,
+            prev_ga4,
+            current_gsc,
+            prev_gsc,
+            ga4_totals_current,
+            ga4_totals_prev,
+        )
         message = build_chat_message(report)
 
         response = requests.post(webhook_url, json=message, timeout=30)

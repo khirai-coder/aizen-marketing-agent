@@ -4,11 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from ga4_client import GA4PageRow
+from ga4_client import GA4PageRow, GA4Totals
 from gsc_client import GSCPageRow
 
 TOP_N = 8
 MOVERS_N = 3
+NEW_PAGE_THRESHOLD = 5  # 前週がこの値未満なら%表示ではなく「新規」扱いにする
 
 
 @dataclass
@@ -61,6 +62,17 @@ def _fmt_pct(pct: float | None) -> str:
     return f"{sign}{pct:.1f}%"
 
 
+def _fmt_page_change(current: int, previous: int) -> str:
+    """ページ単位のセッション変化を表示用文字列にする。
+
+    前週がほぼゼロの場合、%表示だと前週1→今週233のようなケースで
+    +23200%といった意味のない数字になるため「新規」扱いにする。
+    """
+    if previous < NEW_PAGE_THRESHOLD:
+        return "新規" if current >= NEW_PAGE_THRESHOLD else "―"
+    return _fmt_pct(_pct_change(current, previous))
+
+
 def build_report(
     period: tuple[date, date],
     prev_period: tuple[date, date],
@@ -68,22 +80,27 @@ def build_report(
     prev_ga4: list[GA4PageRow],
     current_gsc: list[GSCPageRow],
     prev_gsc: list[GSCPageRow],
+    ga4_totals_current: GA4Totals,
+    ga4_totals_prev: GA4Totals,
 ) -> dict:
     """マージ済みページ指標と全体サマリを含むレポートデータを返す。"""
     current_pages = _merge(current_ga4, current_gsc)
     prev_pages = _merge(prev_ga4, prev_gsc)
 
+    # セッション/ユーザーはページ内訳の合計だとGA4のデータ間引き(thresholding)で
+    # 実際より少なく出ることがあるため、全体サマリはディメンションなしで取得した
+    # ga4_totals_* を使う。クリック/表示回数(GSC)はページ内訳の合計で正確。
     totals_current = {
-        "sessions": sum(p.sessions for p in current_pages.values()),
-        "active_users": sum(p.active_users for p in current_pages.values()),
-        "conversions": sum(p.conversions for p in current_pages.values()),
+        "sessions": ga4_totals_current.sessions,
+        "active_users": ga4_totals_current.active_users,
+        "conversions": ga4_totals_current.conversions,
         "clicks": sum(p.clicks for p in current_pages.values()),
         "impressions": sum(p.impressions for p in current_pages.values()),
     }
     totals_prev = {
-        "sessions": sum(p.sessions for p in prev_pages.values()),
-        "active_users": sum(p.active_users for p in prev_pages.values()),
-        "conversions": sum(p.conversions for p in prev_pages.values()),
+        "sessions": ga4_totals_prev.sessions,
+        "active_users": ga4_totals_prev.active_users,
+        "conversions": ga4_totals_prev.conversions,
         "clicks": sum(p.clicks for p in prev_pages.values()),
         "impressions": sum(p.impressions for p in prev_pages.values()),
     }
@@ -92,16 +109,24 @@ def build_report(
         current_pages.values(), key=lambda p: p.sessions, reverse=True
     )[:TOP_N]
 
+    # 前週にほぼ実績がなかったページ(新規公開など)は%変化が意味を持たないため、
+    # 「新規で伸びたページ」として別枠にし、既存ページの増減(movers)からは除外する。
+    new_pages = []
     movers = []
     for path, cur in current_pages.items():
         prev = prev_pages.get(path)
         prev_sessions = prev.sessions if prev else 0
+        if prev_sessions < NEW_PAGE_THRESHOLD:
+            if cur.sessions >= NEW_PAGE_THRESHOLD:
+                new_pages.append(cur)
+            continue
         if cur.sessions < 10 and prev_sessions < 10:
             continue
         pct = _pct_change(cur.sessions, prev_sessions)
         if pct is None:
             continue
         movers.append((pct, cur, prev_sessions))
+    new_pages.sort(key=lambda p: p.sessions, reverse=True)
     movers.sort(key=lambda x: x[0], reverse=True)
     top_gainers = [m for m in movers if m[0] > 0][:MOVERS_N]
     top_losers = [m for m in movers if m[0] < 0][-MOVERS_N:][::-1]
@@ -113,6 +138,7 @@ def build_report(
         "totals_prev": totals_prev,
         "top_pages": top_pages,
         "prev_pages": prev_pages,
+        "new_pages": new_pages[:MOVERS_N],
         "top_gainers": top_gainers,
         "top_losers": top_losers,
     }
@@ -137,12 +163,16 @@ def build_chat_message(report: dict) -> dict:
     for i, p in enumerate(report["top_pages"], start=1):
         prev = report["prev_pages"].get(p.path)
         prev_sessions = prev.sessions if prev else 0
-        pct = _fmt_pct(_pct_change(p.sessions, prev_sessions))
+        pct = _fmt_page_change(p.sessions, prev_sessions)
         top_lines.append(
             f"{i}. <b>{p.path}</b> — セッション {p.sessions:,} ({pct}) / クリック {p.clicks:,} / 掲載順位 {p.position:.1f}"
         )
 
     mover_lines = []
+    if report.get("new_pages"):
+        mover_lines.append("<b>新規で伸びたページ</b>")
+        for p in report["new_pages"]:
+            mover_lines.append(f"・{p.path} — セッション {p.sessions:,}")
     if report["top_gainers"]:
         mover_lines.append("<b>伸びたページ</b>")
         for pct, cur, prev_sessions in report["top_gainers"]:
