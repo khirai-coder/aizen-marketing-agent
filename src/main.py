@@ -1,15 +1,14 @@
 """週次GA4/Search Consoleレポートを取得しGoogle Chatへ送信するエントリポイント。"""
 from __future__ import annotations
 
-import json
 import os
 import sys
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import google.auth
 import requests
 from dotenv import load_dotenv
-from google.oauth2 import service_account
 
 import ga4_client
 import gsc_client
@@ -23,10 +22,14 @@ SCOPES = [
 ]
 
 
-def _load_credentials() -> service_account.Credentials:
-    raw = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    info = json.loads(raw)
-    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+def _load_credentials():
+    """Application Default Credentials を使う。
+
+    GitHub Actions では google-github-actions/auth (Workload Identity Federation)
+    が実行前にADCを用意するため、鍵ファイルは不要。
+    """
+    credentials, _ = google.auth.default(scopes=SCOPES)
+    return credentials
 
 
 def _last_two_full_weeks(today: date) -> tuple[tuple[date, date], tuple[date, date]]:
