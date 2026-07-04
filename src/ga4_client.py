@@ -8,7 +8,10 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
     DateRange,
     Dimension,
+    Filter,
+    FilterExpression,
     Metric,
+    OrderBy,
     RunReportRequest,
 )
 from google.oauth2 import service_account
@@ -31,6 +34,13 @@ class GA4Totals:
     sessions: int
     active_users: int
     page_views: int
+    conversions: float
+
+
+@dataclass
+class GA4MonthlyRow:
+    year_month: str  # "202601" のようなYYYYMM形式
+    sessions: int
     conversions: float
 
 
@@ -106,6 +116,45 @@ def fetch_page_metrics(
                 sessions=int(sessions),
                 active_users=int(active_users),
                 page_views=int(page_views),
+                conversions=float(conversions),
+            )
+        )
+    return rows
+
+
+def fetch_monthly_organic_trend(
+    credentials: service_account.Credentials,
+    property_id: str,
+    start_date: date,
+    end_date: date,
+) -> list[GA4MonthlyRow]:
+    """オーガニック検索経由の月次セッション数・コンバージョン数を取得する。"""
+    client = _client(credentials)
+    request = RunReportRequest(
+        property=f"properties/{property_id}",
+        dimensions=[Dimension(name="yearMonth")],
+        metrics=[Metric(name="sessions"), Metric(name="conversions")],
+        date_ranges=[
+            DateRange(start_date=start_date.isoformat(), end_date=end_date.isoformat())
+        ],
+        dimension_filter=FilterExpression(
+            filter=Filter(
+                field_name="sessionDefaultChannelGroup",
+                string_filter=Filter.StringFilter(value="Organic Search"),
+            )
+        ),
+        order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="yearMonth"))],
+    )
+    response = client.run_report(request)
+
+    rows: list[GA4MonthlyRow] = []
+    for row in response.rows:
+        year_month = row.dimension_values[0].value
+        sessions, conversions = (v.value for v in row.metric_values)
+        rows.append(
+            GA4MonthlyRow(
+                year_month=year_month,
+                sessions=int(sessions),
                 conversions=float(conversions),
             )
         )

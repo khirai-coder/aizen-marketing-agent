@@ -26,6 +26,7 @@ SCOPES = [
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORTS_DIR = REPO_ROOT / "reports"
+ORGANIC_TREND_START = date(2026, 1, 1)
 
 
 def _load_credentials():
@@ -108,8 +109,11 @@ def main() -> int:
         chart_image_url = None
         chart_base_url = os.environ.get("CHART_IMAGE_BASE_URL")
         if chart_base_url:
+            monthly_trend = ga4_client.fetch_monthly_organic_trend(
+                credentials, property_id, ORGANIC_TREND_START, period[1]
+            )
             REPORTS_DIR.mkdir(exist_ok=True)
-            chart.generate_top_pages_chart(report, str(REPORTS_DIR / "latest.png"))
+            chart.generate_monthly_organic_chart(monthly_trend, str(REPORTS_DIR / "latest.png"))
             chart_image_url = f"{chart_base_url.rstrip('/')}/reports/latest.png?d={period[1].isoformat()}"
 
         message = build_chat_message(report, memo_lines, chart_image_url)

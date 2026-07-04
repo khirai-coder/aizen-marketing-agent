@@ -306,7 +306,7 @@ def build_chat_message(
     if chart_image_url:
         sections.append(
             {
-                "header": "ページ別セッション数グラフ",
+                "header": "オーガニック月次セッション推移",
                 "widgets": [{"image": {"imageUrl": chart_image_url}}],
             }
         )
