@@ -1,6 +1,7 @@
 """週次GA4/Search Consoleレポートを取得しGoogle Chatへ送信するエントリポイント。"""
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import date, datetime, timedelta
@@ -105,13 +106,24 @@ def main() -> int:
         )
 
         chart_image_url = None
-        pages_base_url = os.environ.get("GITHUB_PAGES_BASE_URL")
-        if pages_base_url:
+        chart_base_url = os.environ.get("CHART_IMAGE_BASE_URL")
+        if chart_base_url:
             REPORTS_DIR.mkdir(exist_ok=True)
             chart.generate_top_pages_chart(report, str(REPORTS_DIR / "latest.png"))
-            chart_image_url = f"{pages_base_url.rstrip('/')}/reports/latest.png?d={period[1].isoformat()}"
+            chart_image_url = f"{chart_base_url.rstrip('/')}/reports/latest.png?d={period[1].isoformat()}"
 
         message = build_chat_message(report, memo_lines, chart_image_url)
+
+        if chart_image_url:
+            # 画像ファイルをリポジトリにpushして公開URLが有効になってから
+            # Chatに投稿する必要があるため、ここでは送らずJSONを書き出すだけにする。
+            # 実際の送信はpush後にワークフロー側で行う。
+            REPORTS_DIR.mkdir(exist_ok=True)
+            (REPORTS_DIR / "message.json").write_text(
+                json.dumps(message, ensure_ascii=False), encoding="utf-8"
+            )
+            print(f"Report built for {period[0]}〜{period[1]} (pending chart push before send)")
+            return 0
 
         response = requests.post(webhook_url, json=message, timeout=30)
         response.raise_for_status()

@@ -29,16 +29,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Send weekly report
+      - name: Build report and chart
         working-directory: src
         env:
           GA4_PROPERTY_ID: ${{ secrets.GA4_PROPERTY_ID }}
           GSC_SITE_URL: ${{ secrets.GSC_SITE_URL }}
           GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
-          GITHUB_PAGES_BASE_URL: "https://khirai-coder.github.io/aizen-marketing-agent"
+          CHART_IMAGE_BASE_URL: "https://raw.githubusercontent.com/khirai-coder/aizen-marketing-agent/main"
         run: python main.py
 
-      - name: Publish chart to GitHub Pages
+      - name: Publish chart image
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -47,3 +47,9 @@ jobs:
             git commit -m "Update weekly report chart"
             git push
           fi
+
+      - name: Send Chat notification
+        run: |
+          curl -sS -X POST -H "Content-Type: application/json" \
+            -d @reports/message.json \
+            "${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}"
